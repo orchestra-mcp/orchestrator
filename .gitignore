@@ -1,0 +1,21 @@
+# Binaries
+orchestrator
+bin/
+
+# Go
+*.test
+*.out
+vendor/
+
+# Certificates
+certs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
