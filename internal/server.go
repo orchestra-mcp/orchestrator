@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"log"
+	"time"
 
 	pluginv1 "github.com/orchestra-mcp/gen-go/orchestra/plugin/v1"
 	"github.com/google/uuid"
@@ -46,7 +47,10 @@ func (s *OrchestratorServer) Addr() string {
 // ListenAndServe starts the QUIC listener and processes connections until the
 // context is cancelled.
 func (s *OrchestratorServer) ListenAndServe(ctx context.Context) error {
-	listener, err := quic.ListenAddr(s.addr, s.tlsConfig, &quic.Config{})
+	listener, err := quic.ListenAddr(s.addr, s.tlsConfig, &quic.Config{
+		MaxIdleTimeout:  5 * time.Minute,
+		KeepAlivePeriod: 15 * time.Second,
+	})
 	if err != nil {
 		return fmt.Errorf("quic listen %s: %w", s.addr, err)
 	}
@@ -157,6 +161,30 @@ func (s *OrchestratorServer) dispatch(ctx context.Context, req *pluginv1.PluginR
 		return &pluginv1.PluginResponse{
 			Response: &pluginv1.PluginResponse_ToolCall{
 				ToolCall: result,
+			},
+		}
+
+	case *pluginv1.PluginRequest_ListPrompts:
+		prompts, err := s.router.ListAllPrompts(ctx)
+		if err != nil {
+			return errorResponse("list_prompts_error", err.Error())
+		}
+		return &pluginv1.PluginResponse{
+			Response: &pluginv1.PluginResponse_ListPrompts{
+				ListPrompts: &pluginv1.ListPromptsResponse{
+					Prompts: prompts,
+				},
+			},
+		}
+
+	case *pluginv1.PluginRequest_PromptGet:
+		result, err := s.router.RoutePromptGet(ctx, r.PromptGet)
+		if err != nil {
+			return errorResponse("prompt_routing_error", err.Error())
+		}
+		return &pluginv1.PluginResponse{
+			Response: &pluginv1.PluginResponse_PromptGet{
+				PromptGet: result,
 			},
 		}
 

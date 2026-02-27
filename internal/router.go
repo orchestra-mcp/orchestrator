@@ -15,6 +15,7 @@ import (
 type Router struct {
 	mu            sync.RWMutex
 	toolRoutes    map[string]*RunningPlugin  // toolName -> plugin
+	promptRoutes  map[string]*RunningPlugin  // promptName -> plugin
 	storageRoutes map[string]*RunningPlugin  // storageType -> plugin
 	plugins       map[string]*RunningPlugin  // pluginID -> plugin
 }
@@ -23,6 +24,7 @@ type Router struct {
 func NewRouter() *Router {
 	return &Router{
 		toolRoutes:    make(map[string]*RunningPlugin),
+		promptRoutes:  make(map[string]*RunningPlugin),
 		storageRoutes: make(map[string]*RunningPlugin),
 		plugins:       make(map[string]*RunningPlugin),
 	}
@@ -39,6 +41,9 @@ func (r *Router) RegisterPlugin(rp *RunningPlugin) {
 	if rp.Manifest != nil {
 		for _, tool := range rp.Manifest.GetProvidesTools() {
 			r.toolRoutes[tool] = rp
+		}
+		for _, prompt := range rp.Manifest.GetProvidesPrompts() {
+			r.promptRoutes[prompt] = rp
 		}
 		for _, st := range rp.Manifest.GetProvidesStorage() {
 			r.storageRoutes[st] = rp
@@ -60,6 +65,11 @@ func (r *Router) UnregisterPlugin(id string) {
 		for _, tool := range rp.Manifest.GetProvidesTools() {
 			if r.toolRoutes[tool] == rp {
 				delete(r.toolRoutes, tool)
+			}
+		}
+		for _, prompt := range rp.Manifest.GetProvidesPrompts() {
+			if r.promptRoutes[prompt] == rp {
+				delete(r.promptRoutes, prompt)
 			}
 		}
 		for _, st := range rp.Manifest.GetProvidesStorage() {
@@ -245,6 +255,70 @@ func (r *Router) ListAllTools(ctx context.Context) ([]*pluginv1.ToolDefinition, 
 	}
 
 	return allTools, nil
+}
+
+// ListAllPrompts queries every registered plugin for its prompts and returns an
+// aggregated list of all prompt definitions.
+func (r *Router) ListAllPrompts(ctx context.Context) ([]*pluginv1.PromptDefinition, error) {
+	r.mu.RLock()
+	pluginsCopy := make([]*RunningPlugin, 0, len(r.plugins))
+	for _, rp := range r.plugins {
+		pluginsCopy = append(pluginsCopy, rp)
+	}
+	r.mu.RUnlock()
+
+	var allPrompts []*pluginv1.PromptDefinition
+	for _, rp := range pluginsCopy {
+		resp, err := rp.Client.Send(ctx, &pluginv1.PluginRequest{
+			RequestId: uuid.New().String(),
+			Request: &pluginv1.PluginRequest_ListPrompts{
+				ListPrompts: &pluginv1.ListPromptsRequest{},
+			},
+		})
+		if err != nil {
+			continue
+		}
+		lp := resp.GetListPrompts()
+		if lp != nil {
+			allPrompts = append(allPrompts, lp.GetPrompts()...)
+		}
+	}
+
+	return allPrompts, nil
+}
+
+// RoutePromptGet dispatches a prompt get request to the plugin that provides it.
+func (r *Router) RoutePromptGet(ctx context.Context, req *pluginv1.PromptGetRequest) (*pluginv1.PromptGetResponse, error) {
+	r.mu.RLock()
+	rp, ok := r.promptRoutes[req.GetPromptName()]
+	r.mu.RUnlock()
+
+	if !ok {
+		return &pluginv1.PromptGetResponse{
+			Description: fmt.Sprintf("no plugin provides prompt %q", req.GetPromptName()),
+		}, nil
+	}
+
+	resp, err := rp.Client.Send(ctx, &pluginv1.PluginRequest{
+		RequestId: uuid.New().String(),
+		Request: &pluginv1.PluginRequest_PromptGet{
+			PromptGet: req,
+		},
+	})
+	if err != nil {
+		return &pluginv1.PromptGetResponse{
+			Description: fmt.Sprintf("failed to route prompt get to plugin %q: %v", rp.Config.ID, err),
+		}, nil
+	}
+
+	pg := resp.GetPromptGet()
+	if pg == nil {
+		return &pluginv1.PromptGetResponse{
+			Description: "plugin returned non-prompt-get response",
+		}, nil
+	}
+
+	return pg, nil
 }
 
 // findStoragePlugin looks up the plugin providing the given storage type.
