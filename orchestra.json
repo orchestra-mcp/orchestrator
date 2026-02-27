@@ -1,0 +1,21 @@
+{
+    "name": "orchestra-mcp/orchestrator",
+    "description": "Plugin host orchestrator with QUIC mesh, message routing, and lifecycle management.",
+    "type": "service",
+    "license": "MIT",
+    "homepage": "https://orchestra-mcp.dev",
+    "support": {
+        "issues": "https://github.com/orchestra-mcp/orchestrator/issues",
+        "source": "https://github.com/orchestra-mcp/orchestrator"
+    },
+    "require": {
+        "orchestra-mcp/gen-go": "^0.1.0",
+        "orchestra-mcp/sdk-go": "^0.1.0"
+    },
+    "bin": "orchestrator",
+    "extra": {
+        "branch-alias": {
+            "dev-master": "0.1.x-dev"
+        }
+    }
+}
