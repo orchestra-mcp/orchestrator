@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"io"
 	"log"
+	"net"
 	"time"
 
 	pluginv1 "github.com/orchestra-mcp/gen-go/orchestra/plugin/v1"
@@ -88,13 +90,37 @@ func (s *OrchestratorServer) handleConnection(ctx context.Context, conn quic.Con
 	}
 }
 
-// handleStream reads a PluginRequest, dispatches it, writes the response, and
-// closes the stream.
-func (s *OrchestratorServer) handleStream(ctx context.Context, stream quic.Stream) {
-	defer stream.Close()
+// ListenAndServeTCP starts a plain TCP listener on addr, serving the same
+// length-delimited Protobuf protocol as the QUIC server. Used by Swift/macOS
+// clients that cannot open raw QUIC streams via Network.framework.
+func (s *OrchestratorServer) ListenAndServeTCP(ctx context.Context, addr string) error {
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("tcp listen %s: %w", addr, err)
+	}
+	log.Printf("orchestrator TCP server listening on %s", ln.Addr().String())
+	go func() {
+		<-ctx.Done()
+		ln.Close()
+	}()
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			return fmt.Errorf("tcp accept: %w", err)
+		}
+		go s.handleRWC(ctx, conn)
+	}
+}
+
+// handleRWC handles one request/response over any io.ReadWriteCloser.
+func (s *OrchestratorServer) handleRWC(ctx context.Context, rwc io.ReadWriteCloser) {
+	defer rwc.Close()
 
 	var req pluginv1.PluginRequest
-	if err := plugin.ReadMessage(stream, &req); err != nil {
+	if err := plugin.ReadMessage(rwc, &req); err != nil {
 		log.Printf("orchestrator server: read request: %v", err)
 		return
 	}
@@ -102,9 +128,15 @@ func (s *OrchestratorServer) handleStream(ctx context.Context, stream quic.Strea
 	resp := s.dispatch(ctx, &req)
 	resp.RequestId = req.GetRequestId()
 
-	if err := plugin.WriteMessage(stream, resp); err != nil {
+	if err := plugin.WriteMessage(rwc, resp); err != nil {
 		log.Printf("orchestrator server: write response: %v", err)
 	}
+}
+
+// handleStream reads a PluginRequest, dispatches it, writes the response, and
+// closes the stream.
+func (s *OrchestratorServer) handleStream(ctx context.Context, stream quic.Stream) {
+	s.handleRWC(ctx, stream)
 }
 
 // dispatch routes a PluginRequest to the appropriate handler based on the
@@ -231,6 +263,22 @@ func (s *OrchestratorServer) dispatch(ctx context.Context, req *pluginv1.PluginR
 				StorageList: result,
 			},
 		}
+
+	case *pluginv1.PluginRequest_Subscribe:
+		// A plugin is subscribing to events via the orchestrator.
+		// We don't know which plugin sent this without tracking connections,
+		// so we acknowledge the subscription and store it for fan-out.
+		s.router.AddSubscription(r.Subscribe, nil)
+		return &pluginv1.PluginResponse{}
+
+	case *pluginv1.PluginRequest_Unsubscribe:
+		s.router.RemoveSubscription(r.Unsubscribe.SubscriptionId)
+		return &pluginv1.PluginResponse{}
+
+	case *pluginv1.PluginRequest_Publish:
+		// Fan out the event to all matching subscribers.
+		s.router.Publish(ctx, r.Publish)
+		return &pluginv1.PluginResponse{}
 
 	default:
 		return errorResponse("unknown_request", "unrecognized request type")

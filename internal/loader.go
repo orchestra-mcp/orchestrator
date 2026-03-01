@@ -189,6 +189,11 @@ func (l *Loader) StartPlugin(ctx context.Context, cfg PluginConfig, orchestrator
 		manifest.ProvidesStorage = cfg.ProvidesStorage
 	}
 
+	// Populate AI provider capabilities from config.
+	if len(cfg.ProvidesAI) > 0 {
+		manifest.ProvidesAi = cfg.ProvidesAI
+	}
+
 	// Query the plugin for its actual manifest via ListTools to populate routes.
 	// The plugin's own registration response does not include the full manifest,
 	// so we rebuild it from what we know plus a ListTools query.

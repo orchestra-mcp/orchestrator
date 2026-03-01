@@ -51,6 +51,18 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 		serverErr <- o.server.ListenAndServe(ctx)
 	}()
 
+	// Also start a plain TCP server on port+1 for clients (e.g. Swift/macOS)
+	// that cannot open raw QUIC streams via Network.framework.
+	tcpAddr := o.config.TCPAddr
+	if tcpAddr == "" {
+		tcpAddr = "localhost:50101"
+	}
+	go func() {
+		if err := o.server.ListenAndServeTCP(ctx, tcpAddr); err != nil {
+			log.Printf("TCP server error: %v", err)
+		}
+	}()
+
 	// Give the server a moment to bind.
 	time.Sleep(100 * time.Millisecond)
 	actualAddr := o.server.Addr()
@@ -70,6 +82,7 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 		}
 
 		o.router.RegisterPlugin(rp)
+		o.router.AutoSubscribeFromManifest(rp)
 		log.Printf("plugin %q registered with router", pcfg.ID)
 	}
 
