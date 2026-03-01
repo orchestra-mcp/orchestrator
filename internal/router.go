@@ -57,8 +57,16 @@ func (r *Router) RegisterPlugin(rp *RunningPlugin) {
 	r.plugins[rp.Config.ID] = rp
 
 	if rp.Manifest != nil {
-		for _, tool := range rp.Manifest.GetProvidesTools() {
-			r.toolRoutes[tool] = rp
+		isAIBridge := len(rp.Manifest.GetProvidesAi()) > 0
+
+		// Only add to generic toolRoutes if the plugin is NOT an AI bridge.
+		// AI bridge plugins all share the same tool names (ai_prompt, spawn_session,
+		// etc.), so adding them to toolRoutes causes last-registered-wins conflicts.
+		// They should only be reachable through the provider-indexed aiRoutes table.
+		if !isAIBridge {
+			for _, tool := range rp.Manifest.GetProvidesTools() {
+				r.toolRoutes[tool] = rp
+			}
 		}
 		for _, prompt := range rp.Manifest.GetProvidesPrompts() {
 			r.promptRoutes[prompt] = rp
@@ -90,9 +98,13 @@ func (r *Router) UnregisterPlugin(id string) {
 	}
 
 	if rp.Manifest != nil {
-		for _, tool := range rp.Manifest.GetProvidesTools() {
-			if r.toolRoutes[tool] == rp {
-				delete(r.toolRoutes, tool)
+		// Only clean toolRoutes for non-AI-bridge plugins (AI bridges were
+		// never added to toolRoutes — see RegisterPlugin).
+		if len(rp.Manifest.GetProvidesAi()) == 0 {
+			for _, tool := range rp.Manifest.GetProvidesTools() {
+				if r.toolRoutes[tool] == rp {
+					delete(r.toolRoutes, tool)
+				}
 			}
 		}
 		for _, prompt := range rp.Manifest.GetProvidesPrompts() {
@@ -206,6 +218,17 @@ func (r *Router) findToolPlugin(toolName, provider string) *RunningPlugin {
 	// This ensures chat requests default to Claude when the provider field is set
 	// but the specific provider isn't registered.
 	if provider != "" {
+		if providerTools, ok := r.aiRoutes["claude"]; ok {
+			if rp, ok := providerTools[toolName]; ok {
+				return rp
+			}
+		}
+	}
+	// No provider specified but tool exists in AI routes — default to claude.
+	// This handles the case where ai_prompt (or other AI bridge tools) is called
+	// without an explicit provider. Since AI bridge tools are no longer in
+	// toolRoutes, we need this fallback to route them correctly.
+	if provider == "" {
 		if providerTools, ok := r.aiRoutes["claude"]; ok {
 			if rp, ok := providerTools[toolName]; ok {
 				return rp
